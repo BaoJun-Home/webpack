@@ -73,8 +73,8 @@ npx webpack --watch ## 只要文件发生了变化，会重新打包
 
 ```json
 "scripts": {
-  "dev": "webpack --mode=development --watch", // 开发环境且会监测文件的变化
-  "build": "webpack --mode=production --watch", // 生产环境且会监测文件的变化
+  "dev": "webpack --mode=development --watch",
+  "build": "webpack --mode=production --watch",
 },
 ```
 

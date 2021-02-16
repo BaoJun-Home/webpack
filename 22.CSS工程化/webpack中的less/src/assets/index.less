@@ -1,0 +1,12 @@
+@width: 100px;
+@height: 100px;
+@color: red;
+.getborder() {
+  border: 3px solid @color;
+}
+
+.item {
+  width: @width;
+  height: @height;
+  .getborder();
+}

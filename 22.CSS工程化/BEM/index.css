@@ -1,0 +1,44 @@
+.banner__container {
+  width: 520px;
+  height: 280px;
+  border: 1px solid;
+  margin: 10px auto;
+  overflow: hidden;
+  position: relative;
+}
+
+.banner__imagecontainer {
+  margin: 0;
+  padding: 0;
+  width: 1560px;
+  height: 280px;
+}
+
+.banner__imagecontainer img {
+  width: 520px;
+  height: 280px;
+  float: left;
+}
+
+.banner__dotcontainer {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translate(-50%);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 5px 10px;
+  border-radius: 8px;
+  display: flex;
+}
+
+.banner__dotcontainer_dot {
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  margin: 0 10px;
+  border-radius: 50%;
+}
+
+.banner__dotcontainer_activedot {
+  background: #f40;
+}

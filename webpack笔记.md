@@ -2169,3 +2169,490 @@ import styles2 from "./assets/b.css";
 ```
 
 如果时多入口，和生成 js 文件的规则一样，根据 chunk 生成多个 css 文件。
+
+### JS 兼容性
+
+babel：巴别塔，时一个编译器，类似于 webpack、postcss，可以将不同标准（ES 不同版本）的语言，编译成兼容性的语言。
+
+babel 本身只提供了一些基本的分析功能，具体怎么转换需要依靠插件来完成。
+
+##### babel 的安装
+
+babel 可以和构建工具一起联用，也可以独立使用。
+
+如果需要独立使用，需要安装下面两个库
+
+- @babel/core：babel 的核心库，提供了编译过程中所使用到的所有 babelAPI
+- @babel/cli：提供了一个命令，可以调用 babelAPI 来完成编译
+
+```shell
+npm i -D @babel/core @babel/cli
+```
+
+##### babel 的使用
+
+```shell
+npx babel 需要编译的文件 -o 最终编译结果放置的文件 # 用于编译文件
+npx babel 需要编译的目录 -d 最终编译结果放置的目录 # 用于编译目录
+```
+
+```shell
+npx babel js/a.js -o js/b.js -w # -w 监测文件的变化
+npx babel js -d scripts # 将js目录下的所有文件编译到scripts目录中
+```
+
+##### babel 的配置
+
+babel 本身只提供了一些分析的功能，真正的编译工作是由 “babel 的插件” 和 “babel 的预设” 来完成的
+
+babel 的预设和 postcss-preset-env 差不多，都是指多个插件的集合，用于解决一些常见的兼容问题。
+
+babel 的配置文件 `.babelrc`
+
+```json
+{
+  // 需要使用的预设，如果使用多个预设，和loader一样的执行顺序，从数组的最后一项开始
+  "presets": ["@babel/preset-env"],
+  "plugins": [] // 需要使用的插件
+}
+```
+
+##### babel 的预设
+
+`@babel/preset-env`：可以使用最新的 JS 语法书写，无需对每种语法的转换设置具体的插件。
+
+源码文件
+
+```js
+const a = 1;
+```
+
+编译结果文件
+
+```js
+"use strict";
+var a = 1;
+```
+
+也可以设置浏览器的兼容范围，使用 `.browserslistrc` 文件配置
+
+```json
+last 2 version
+> 1%
+not ie <= 8
+```
+
+和 `postcss-preset-env` 一样，该预设也可以进行自身的配置：https://www.babeljs.cn/docs/babel-preset-env
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "配置项": "配置的值"
+      }
+    ]
+  ]
+}
+```
+
+其中有一个配置项 `useBuiltIns`，默认值 false，（babel 默认表示仅转换新语法）不会对新的 API 进行处理，例如 Promise
+
+```js
+const pro = new Promise((resolve, reject) => {
+  if (Math.random() < 0.5) {
+    resolve(true);
+  } else {
+    resolve(false);
+  }
+});
+const a = 2 ** 3;
+```
+
+转换结果
+
+```js
+"use strict";
+
+// API 没有进行转换
+var pro = new Promise(function (resolve, reject) {
+  if (Math.random() < 0.5) {
+    resolve(true);
+  } else {
+    resolve(false);
+  }
+});
+var a = Math.pow(2, 3); // 新语法转换了
+```
+
+可以配置 `"useBuiltIns": "useage"`，则会按需（需要哪个 API 导入哪个）构建新的 API
+
+配置文件
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage" // 按需构建新的API
+      }
+    ]
+  ]
+}
+```
+
+编译结果文件
+
+```js
+"use strict";
+
+// core-js：该库包含了所有新API的实现
+require("core-js/modules/es6.promise.js");
+require("core-js/modules/es6.object.to-string.js");
+
+var pro = new Promise(function (resolve, reject) {
+  if (Math.random() < 0.5) {
+    resolve(true);
+  } else {
+    resolve(false);
+  }
+});
+var a = Math.pow(2, 3);
+```
+
+代码还虽然转换了，但是还是不能使用，应为使用 Promise 时导入了一个库 `core-js`，需要安装
+
+```shell
+npm i core-js
+```
+
+core-js 编写时的版本是 2.xxx.xxx 版本，安装的是 3.xxx.xxx 版本，需要配置一下
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage",
+        "corejs": 3 // 使用 core-js 的主版本是 3
+      }
+    ]
+  ]
+}
+```
+
+如果需要使用 async 和 await 语法，还需要安装 `regenerator-runtime` 库
+
+```shell
+npm i regenerator-runtime
+```
+
+##### babel 的插件
+
+插件：和预设一样，也是转换代码用的，在预设之前运行，如果有多个插件，按照数组的先后顺序运行（从左到右）
+
+通常情况下，预设只转换那些已成为正式标准的语法和 API，对于更早阶段的语法或 API，需要使用插件转换。
+
+更多插件参考：https://www.babeljs.cn/docs/plugins
+
+**@babel/plugin-proposal-class-properties**
+
+该插件可以让你在类中书写初始化字段
+
+```shell
+npm i -D @babel/plugin-proposal-class-properties
+```
+
+配置文件
+
+```json
+{
+  // "plugins": ["@babel/plugin-proposal-class-properties"] // 简写
+  "plugins": [
+    [
+      "@babel/plugin-proposal-class-properties",
+      {
+        // 插件的配置
+        "loose": true // 编译时宽松一点
+      }
+    ]
+  ]
+}
+```
+
+源码文件
+
+```js
+class Test {
+  a = 1; // 初始化字段
+  constructor(value = 10) {
+    this.value = value;
+  }
+}
+```
+
+编译结果文件
+
+```js
+"use strict";
+
+function _classCallCheck(instance, Constructor) {
+  if (!(instance instanceof Constructor)) {
+    throw new TypeError("Cannot call a class as a function");
+  }
+}
+
+function _defineProperty(obj, key, value) {
+  if (key in obj) {
+    Object.defineProperty(obj, key, {
+      value: value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  } else {
+    obj[key] = value;
+  }
+  return obj;
+}
+
+var Test = function Test() {
+  _classCallCheck(this, Test);
+
+  _defineProperty(this, "a", 1);
+
+  this.value = 10;
+};
+```
+
+**@babel/plugin-proposal-function-bind**
+
+该插件可以让你为某个方法轻松的绑定 this
+
+```shell
+npm i -D @babel/plugin-proposal-function-bind
+```
+
+配置文件
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage",
+        "corejs": 3
+      }
+    ]
+  ],
+  "plugins": ["@babel/plugin-proposal-function-bind"]
+}
+```
+
+源码文件
+
+```js
+function print() {
+  console.log(this.value);
+}
+
+const obj = {
+  value: 123,
+};
+
+obj::print(); // 相当于 print.call(obj)
+```
+
+编译结果文件
+
+```js
+"use strict";
+
+function print() {
+  console.log(this.value);
+}
+
+var obj = {
+  value: 123,
+};
+print.call(obj);
+```
+
+**@babel/plugin-proposal-optional-chaining**
+
+该插件用于安全的读取某个对象的属性。如果某个属性不存在，直接返回 undefined，不会报错。
+
+以前的写法，如果读取 null 或 undefined 中的属性会报错
+
+```shell
+npm i -D @babel/plugin-proposal-optional-chaining
+```
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage",
+        "corejs": 3
+      }
+    ]
+  ],
+  "plugins": ["@babel/plugin-proposal-optional-chaining"]
+}
+```
+
+```js
+const obj = {
+  a: {
+    b: {
+      c: {
+        d: 100,
+      },
+    },
+  },
+};
+
+const d = obj?.a?.b?.c?.d;
+console.log(d); // 100
+
+const d = obj?.e;
+console.log(d); // undefined
+```
+
+如果上面用普通语法书写会写成下面这种代码，很麻烦
+
+```js
+const d = obj && obj.a && obj.a.b && obj.a.b.c && obj.a.b.c.d;
+```
+
+**babel-plugin-transform-remove-console**
+
+去除编译结果中所有的输出语句
+
+```shell
+npm i -D babel-plugin-transform-remove-console
+```
+
+这是一个老的插件，可以不使用前缀书写配置文件
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage",
+        "corejs": 3
+      }
+    ]
+  ],
+  // "plugins": ["babel-plugin-transform-remove-console"],
+  "plugins": ["transform-remove-console"] // 简写
+}
+```
+
+**@babel/plugin-transform-runtime**
+
+该插件用于提供一些公共的 API，这些 API 会帮助代码转换（例如在转换时需要依赖一些函数，这个库中都有），依赖 `@babel/runtime` 库
+
+```shell
+npm i -D @babel/plugin-transform-runtime
+npm i @babel/runtime
+```
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage",
+        "corejs": 3
+      }
+    ]
+  ],
+  "plugins": [
+    "@babel/transform-runtime" // 带有命名空间的库可以简写
+  ]
+}
+```
+
+编译结果文件，从 `@babel/runtime` 库中导入的
+
+```js
+var _classCallCheck2 = _interopRequireDefault(
+  require("@babel/runtime/helpers/classCallCheck")
+);
+```
+
+没有这个插件的编译结果文件。在文件中书写的函数，文件多了会造成重复代码
+
+```js
+function _classCallCheck(instance, Constructor) {
+  if (!(instance instanceof Constructor)) {
+    throw new TypeError("Cannot call a class as a function");
+  }
+}
+```
+
+##### webpack 中使用 babel
+
+```shell
+npm i -D @babel/core babel-loader
+```
+
+webpack.config.js 配置文件
+
+```js
+module.exports = {
+  mode: "development",
+  devtool: "source-map",
+
+  module: {
+    rules: [{ test: /\.js$/, use: "babel-loader" }],
+  },
+};
+```
+
+`.babelrc` 配置文件
+
+```json
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage",
+        "corejs": 3
+      }
+    ]
+  ],
+  "plugins": ["@babel/plugin-transform-runtime"]
+}
+```
+
+依赖的包
+
+```json
+"devDependencies": {
+    "@babel/core": "^7.12.16",
+    "@babel/plugin-transform-runtime": "^7.12.15",
+    "@babel/preset-env": "^7.12.16",
+    "babel-loader": "^8.2.2",
+    "webpack": "^5.22.0",
+    "webpack-cli": "^4.5.0"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.12.13",
+    "core-js": "^3.8.3",
+    "regenerator-runtime": "^0.13.7"
+  }
+```
+
+> 转换 async 和 await 时，需要将他们转换成生成器，而生成器也是新语法，也需要转换，转换生成器就需要 regenerator-runtime 这个库的支持，这个库是通过 “迭代器+可迭代协议+状态机” 实现的。

@@ -309,7 +309,7 @@ module.exports = {
   entry: {
     // 一个chunk对应一个入口模块
     index: "./src/index.js",
-    // 一个chunk对应多个入口模块，两个入口模块依次执行，最终文件还是一个
+    // 一个chunk对应多个入口模块，两个入口模块依次执行，最终文件还是一个，最终导出数组的最后一项
     main: ["./src/main1.js", "./src/main2.js"],
   },
 };
@@ -2935,3 +2935,507 @@ if (module.hot) {
 **所以：热更新发生在代码运行期间**
 
 样式代码同样可以进行热更新，需要使用 `style-loader`，因为热更新发生时，`HotModuleReplacementPlugin` 插件只会简单的覆盖并运行模块代码，因此代码一运行 `style-loader` 就会重新设置 style 元素中的样式，而 `mini-css-extract-plugin` 生成的文件是在构建期间，运行期间无法改动文件，因此它对热替换无效。
+
+##### 传输性能优化
+
+分包：将整体的代码，分布到不同的打包文件中（将公共的第三方库或代码抽离出去）
+
+优点：减少公共代码的重复，从而降低总体积，并且有利于浏览器的缓存。
+
+什么时候需要分包：有多个 chunk，并且公共模块代码的体积较大或很少变动，分包时尽量不要影响源码。
+
+**手动分包**
+
+原理：
+
+1. 对于公共的模块，需要重新创建配置文件，先对这些公共模块进行打包，公共模块会被打包成动态链接库（dll：用于暴露全局变量），并产生资源清单（类似 source-map）
+2. 根据入口模块进行正常打包，打包时，如果发现模块中使用了资源清单中描述的模块，导入模块时就会导入这个全局变量，而不导入整个第三方库。
+
+第一步：公共模块的配置文件：`dll.config.js`
+
+```js
+const webpack = require("webpack");
+const path = require("path");
+
+module.exports = {
+  mode: "production", // 生产环境
+
+  // 入口公共模块
+  entry: {
+    jquery: "jquery", // 如果报错，这里请使用数组
+    lodash: "lodash", // 如果报错，这里请使用数组
+  },
+
+  output: {
+    filename: "dll/[name].js", // 在dll目录中按照chunk生产和原来名字一样的js文件
+    library: "[name]", // 每个bundle暴露的全局变量使用原来的名字
+  },
+
+  plugins: [
+    new webpack.DllPlugin({
+      path: path.resolve(__dirname, "dll", "[name].manifest.json"), // 生产资源清单的路径和文件名
+      name: "[name]", // 暴露的变量，通常和 library 保持一致
+    }),
+  ],
+};
+```
+
+配置公共模块的启动脚本
+
+```json
+"dll": "webpack --config dll.config.js"
+```
+
+单独打包公共模块
+
+```shell
+npm run dll
+```
+
+第二步：手动引入公共模块
+
+```html
+<!-- 引入公共模块文件 -->
+<script src="./dll/jquery.js"></script>
+<script src="./dll/lodash.js"></script>
+```
+
+配置 `clean-webpack-plugin`，为了避免清除公共模块
+
+```js
+new CleanWebpackPlugin({
+  cleanOnceBeforeBuildPatterns: ["**/*", "!dll", "!dll/*"],
+  // "**/*"：清空所有文件
+  // "!dll"：排除掉dll目录
+  // "!dll/*"：排除掉dll目录下的所有文件
+});
+```
+
+目录和文件的匹配规则使用的是 `globbing patterns` 语法，参考：https://github.com/sindresorhus/globby#globbing-patterns
+
+运行入口模块打包命令
+
+```shell
+npm run dev
+```
+
+第三步：动态链接库引入插件 `webpack.DllReferencePlugin` 控制打包结果
+
+```js
+new webpack.DllReferencePlugin({
+  manifest: require("./dll/jquery.mainfest.json"),
+}),
+
+new webpack.DllReferencePlugin({
+  manifest: require("./dll/lodash.mainfest.json"),
+}),
+```
+
+总结：
+
+1. 开启 `output.library` 通过全局变量暴露公共模块
+2. 使用 `webpack.DllPlugin` 创建资源清单
+3. 使用 `webpack.DllReferencePlugin` 使用资源清单
+
+注意事项：
+
+- 资源清单不参与运行，不需要放置到打包目录
+- 需要手动的引入公共模块内容，还要配置 `clean-webpack-plugin` 不要清除 dll 目录和里面的文件
+- 不要对小型的公共 JS 库使用手动分包
+
+优点：
+
+- 极大提升自身模块的打包速度
+- 极大缩小文件体积
+- 有利于浏览器缓存公共模块代码
+
+缺点：
+
+- 使用起来比较繁琐
+- 如果第三方库中包含复杂的依赖关系，操作起来会极其繁琐
+
+**自动分包**
+
+不同于手动分包，它时从实际角度出发看问题（分包：实际上就是提取公共模块），而不对具体要把哪个包分出去进行控制。
+
+这种分包操作起来很方便，也满足实际的开发需要，对构建性能稍微有点负面影响。
+
+要进行自动分包，关键点是：配置一个合理的分包策略（就像会议精神一样）
+
+有了这个分包策略之后，不需要安装什么插件，webpack 会按照分包策略进行自动分包（webpack 内部使用 `optimization.splitChunks` 插件完成自动分包）
+
+分包流程：
+
+- 分包策略很重要，它将决定 webpack 如何进行分包
+- 分包时，webpack 会开启一个新的 chunk，对分离的模块（公共）进行打包
+- 打包结果中，会根据新的 chunk 形成一个单独的文件
+
+配置：
+
+webpack 提供了 `optimization` 配置项，用于配置一些优化信息，在其中使用 `splitChunks` 配置分包策略
+
+```js
+module.exports = {
+  optimization: {
+    splitChunks: {
+      // 分包策略
+      chunks: "all",
+      maxSize: 2000, // 慎用
+      automaticNameDelimiter: "-", // 控制连接符
+      minChunks: 1, // 一个模块被引用了几次之后才能进行分包，默认值 1
+      minSize: 30000, // 当分包达到了多少字节后才允许被真正的拆分，默认值 30000
+    },
+  },
+};
+```
+
+事实上，分包策略有默认的配置，我们只需要轻微的改动，就可以应付绝大多数的场景。
+
+1. chunks：用于配置需要使用分包策略的 chunk，取值
+
+- async：默认值，仅针对异步 chunk（懒加载）使用分包策略
+- all：针对所有的 chunk 使用分包策略
+- initial：针对普通 chunk 使用分包策略
+
+2. maxSize：用于配置包的最大字节数，如果超过了这个数字，webpack 会尽可能的将其分离出更多的包（基础单位是模块），这种设置并没有改变总体积，可能会造成更多的 HTTP 请求，慎用
+
+**分包中的缓存组**
+
+之前配置的分包策略都是全局的，实际上分包策略是基于缓存的。
+
+每个缓存组提供一套独有的策略，webpack 会按照缓存组的优先级依次处理每个缓存组，被缓存组处理过的分包不需要再次分包。
+
+默认情况下，webpack 提供了两个缓存组：`vendors` 和 `default`
+
+```js
+module.exports = {
+  optimization: {
+    splitChunks: {
+      // 分包策略
+      chunks: "all", // 全局配置
+
+      cacheGroups: {
+        // key：缓存组名称，会影响分包后的chunk名称
+        // value：缓存组配置，会继承所有的全局配置，在这里配置自己的特有配置
+        vendors: {
+          test: /[\\/]node-modules[\\/]/, // 正则匹配，当匹配成功后，将这些模块进行单独打包
+          priority: -10, // 缓存组的优先级，默认值是 0 ，优先级越高，会先进行处理。
+        },
+
+        // default：缓存组名称，会影响分包后的chunk名称
+        default: {
+          minChunks: 10, // 会覆盖全局配置
+          priority: -20, // 优先级低于vendors
+          reuseExistingChunk: true, // 重用已经被分离出去的chunk
+        },
+      },
+    },
+  },
+};
+```
+
+当我们需要抽离公共样式时，需要使用缓存组
+
+```js
+module.exports = {
+  optimization: {
+    splitChunks: {
+      chunks: "all",
+      cacheGroups: {
+        styles: {
+          test: /\.css$/, // 匹配样式模块
+          minSize: 0, // 覆盖默认的最小尺寸，这里仅仅是作为测试
+          minChunks: 2, // 覆盖默认的最小chunk引用数
+        },
+      },
+    },
+  },
+  module: {
+    rules: [
+      { test: /\.css$/, use: [MiniCssExtractPlugin.loader, "css-loader"] },
+    ],
+  },
+  plugins: [
+    new CleanWebpackPlugin(),
+    new HtmlWebpackPlugin({
+      template: "./public/index.html",
+      chunks: ["index"],
+    }),
+    new MiniCssExtractPlugin({
+      filename: "[name].[hash:5].css",
+      // chunkFilename是配置来自于分割chunk的文件名
+      chunkFilename: "common.[hash:5].css",
+    }),
+  ],
+};
+```
+
+自动分包原理：
+
+1. 检查每个 chunk 生成的编译结果（模块 ID 和编译结果）
+2. 根据分包策略找到满足条件的模块
+3. 根据分包策略生成新的 chunk 将满足条件的模块进行打包
+4. 把打包出来的模块从原始编译结果中移除，并对原始编译结果做修正处理
+
+**代码压缩**
+
+用于单模块体积优化，移除模块内的无效代码，为了减少代码体积，降低代码的可读性，提升破解成本，用于生产环境
+
+压缩工具
+
+- UglifyJS：不支持 ES6 语法
+- Terser：支持 ES6 以上的语法，webpack 内置了 Terser，在生产环境中自动开启。
+
+关于副作用（side effect）
+
+函数运行过程中，可能会对外部环境造成影响的功能
+
+如果函数中包含以下代码，该函数叫做副作用函数:
+
+- 异步代码
+- localStorage
+- 对外部数据的修改
+
+如果一个函数没有副作用，同时，函数的返回结果仅依赖参数，则该函数叫做纯函数(pure function)
+
+webpack 自动集成了 Terser，而且进行了相当好的配置，一般情况下我们不会改动。
+
+如果你想更改、添加压缩工具，又或者是想对 Terser 进行配置，使用下面的 webpack 配置即可
+
+```js
+const TerserPlugin = require("terser-webpack-plugin");
+const OptimizeCSSAssetsPlugin = require("optimize-css-assets-webpack-plugin");
+
+module.exports = {
+  optimization: {
+    // minimize: true, // 是否要启用压缩，默认情况下，生产环境会自动开启，如果设置成true，开发环境也会开启
+    minimizer: [
+      // 压缩时使用的插件，可以有多个
+      new TerserPlugin(), // 需要需要别的压缩工具，这里设置别的压缩工具
+      new OptimizeCSSAssetsPlugin(), // 该插件可以对 CSS 进行压缩
+    ],
+  },
+};
+```
+
+**tree-shaking**
+
+用于单模块体积优化，可以移除模块之间的无效代码（移除掉某个库中没有用到的导出）
+
+webpack 支持 tree-shaking，只要开始了生产环境，tree-shaking 自动开启。
+
+webpack 选择 ES6 导入语句分析依赖是因为
+
+- ES6 的导入语句必须在最顶部
+- import 导入的模块名必须是字符串常量
+- import 导入的变量是常量
+
+具体分析依赖时
+
+- webpack 坚持的原则：保证代码正常运行的情况下，尽量 tree-shaking
+- 如果依赖的是一个导出的对象，为了保证代码的正常运行，webpack 不会移除对象中的任何信息
+
+所以我们应该尽量使用 ES6 的基本导出（`export const xxx = xxx`），ES6 的基本导入（`import { xxx } from 模块路径`）或`import * as obj from 模块路径`（模块对象 obj 中属性不可变）
+
+> 强烈建议：使用 `export const xxx = xxx` 导出，使用 `import { xxx } from 模块路径` 导入
+
+依赖分析完毕后，webpack 会把没有使用到的模块内容标记为 `dead code`，然后交给代码压缩工具处理，压缩工具不会把标记为 `dead code` 的代码打包进最终代码。
+
+某些第三方库使用的 CommonJS 的方式导出（如：lodash），或者某些库没有提供 ES6 的基本导出方式，对于这种库，tree-shaking 无法发挥作用。
+
+很多流行的，但是这些没有使用 ES6 的第三方库，都发布了相应 ES6 的版本，如：lodash-es
+
+tree-shaking 本身没有完善的作用域分析，可能导致一些标记为 `head code` 的代码仍然会视为依赖，可以通过 `webpack-deep-scope-plugin` 插件解决（该库可以进行深度的依赖分析）。
+
+当 webpack 无法确定某段代码是否有副作用（是否对外界有影响）时，它将不会被 tree-shaking，如果我们确定没有副作用可以在 `package.js` 文件中加入 `sideEffects: false`，表示我们工程中没有副作用（这种做法太暴力）
+
+可以精确的控制副作用文件，一般情况下我们不会进行这样的设置
+
+```json
+"sideEffects": [
+  "!src/xxx.js" // 表示除了这个文件，别的文件都有副作用
+]
+```
+
+webpack 无法对 css 完成 tree-shaking，因此需要插件 `purgecss-webpack-plugin`，这个插件对 `css module` 不起作用。
+
+```js
+new PurgeCSSPlugin({
+  paths: [path.resolve(__dirname, "public/index.html"), ....其他绝对路径] // 和什么文件进行对比然后进行tree-shaking
+}),
+```
+
+但是 `purgecss-webpack-plugin` 如果需要匹配多个文件时，书写太麻烦，可以使用 `glob-all` 这个库解决，这个库可以使用多个规则进行匹配文件
+
+```js
+const srcAbs = path.resolve(__dirname, "src");
+
+globAll.sync([
+  `${srcAbs}**/*.js`, // src路径下的所有JS文件全部匹配到
+]);
+```
+
+**懒加载**
+
+就是自动分包时 chunks: async，浏览器会使用 JSONP 的方式远程读取 JS 模块，import 语法会返回一个 Promise，结果类似于 `* as obj`
+
+```js
+const xxx = await import("模块"); // 这个模块就是懒加载的模块，什么时候用什么时候加载进来。
+```
+
+经过上面的操作之后，tree-shaking 不了了，根本原因是：没有静态依赖，可以使用下面的方式解决
+
+1. 创建一个 js 模块文件，使用静态依赖导入模块内容 `export { chunk } from "lodash-es"`
+2. 懒加载的时候导入自己的模块文件 `const { chunk } = await import("./自己的模块文件")`
+
+**gzip**
+
+gzip 是一种压缩文件的算法
+
+优点：传输效率可能大幅度提升。
+缺点：服务器压缩需要时间，客户端解压也需要时间。
+
+webpack 会进行预压缩，使用 `compression-webpack-plugin` 插件完成，这样，服务器就可以不用压缩了，直接将压缩好的文件内容发送给客户端。（这么一来服务器就失去了一些灵活度）
+
+```shell
+npm i -D compression-webpack-plugin
+```
+
+```js
+const CompressionPlugin = require("compression-webpack-plugin");
+
+module.exports = {
+  plugins: [new CompressionPlugin()],
+};
+```
+
+- minRatio：压缩后体积要小于源码的多少比例才会压缩，默认值 0.8
+
+##### 其他性能优化
+
+**ESlint**
+
+代码风格检查，用于解决团队协作代码风格的统一，间接影响性能优化
+
+与构建工具一起使用：打包的时候会警告
+与编辑器一起使用：书写代码时会警告，通常会配合编辑器一起使用
+
+检查的工作还是交给 ESlint 库完成的，如果当前工程没有，则使用全局的，如果都没有，无法完成检查
+
+检查工作根据 `.eslintrc` 配置文件里面的配置做检查，如果找不到工程中的配置文件，则无法检查。
+
+1. 编辑器安装 `eslint` 插件
+
+2. 安装 `eslint` 库
+
+推荐使用 powershell 安装
+
+```shell
+npm i -D [-g] eslint
+```
+
+3. 创建 `.eslintrc` 配置文件
+
+可以手动创建，也可以通过命令 `npx eslint --init` 创建。
+
+eslint 会识别工程中的 `.eslintrc` 配置文件中的配置，也会识别 `package.json` 文件中的 `eslintConfig` 字段中的配置。
+
+```shell
+npx eslint --init
+```
+
+配置文件
+
+- env：该配置项用于设置代码的运行环境
+- extends：该配置项用于设置继承自哪里，值可以时字符串或数组
+- globals：该配置项用于定义全局变量，eslint 还支持注释形式的定义全局变量：`/* global a, b */` | `/* global c: readonly, d: writable */`，仅对本文件有效
+- parser：该配置项用于指定解析器
+- parserOptions：该配置项用于设置要对哪些语言支持
+- rules：该配置项用于设置 eslint 的规则集，具体规则参考：https://eslint.bootcss.com/docs/rules/
+  - 每条规则将影响某个方面的代码风格
+  - 每条规则有以下的取值
+    - off、0、false：表示不使用规则，也就不检查
+    - warn、1、true：警告级别，不会导致程序退出
+    - error、2：错误级别警告，当触发时会导致程序退出
+  - 还可以使用注释的形式配置规则：`/* eslint eqeqeq: "off", curly: "error" */`，仅对本文件有效
+
+使用 `.eslintignore` 文件，排除掉不需要使用 eslint 检查的文件，和 `.gitignore` 的功能一样，将该文件创建在项目的根目录中
+
+```text
+**/dist/**/*.js
+node_modules
+```
+
+```json
+{
+  // 该配置项用于设置代码的运行环境
+  "env": {
+    "browser": true, // 是否在浏览器环境中运行
+    "es2021": true // 是否开启 es2021 的 API
+  },
+  "extends": "eslint:recommended",
+
+  // 该字段用于配置全局变量
+  "globals": {
+    "a": "readonly", // key:全局变量，value：变量的描述，只读属性
+    "b": "writable" // 可写属性
+  },
+
+  "parser": "Espree", // 指定解析器
+
+  // 该配置项用于设置 eslint 要对哪些语言支持
+  "parserOptions": {
+    "ecmaVersion": 12, // 支持 ES 语法的版本
+    "sourceType": "module" // 源码类型支持模块化脚本，选填 script：源码类型支持传统脚本
+  },
+  "rules": {}
+}
+```
+
+**bundle analyzer**
+
+bundle （最终）结果分析，对打包的结果进行分析，它并不会优化代码，而是提示我们当前需要做什么优化。
+
+需要使用插件 `webpack-bundle-analyzer`，通过 npm 安装
+
+```js
+const BundleAnalyzerPlugin = require("webpack-bundle-analyzer")
+  .BundleAnalyzerPlugin; // 使用插件
+
+module.exports = {
+  plugins: [new BundleAnalyzerPlugin()],
+};
+```
+
+会打开一个图形化工具的页面
+
+### 不确定的依赖
+
+导入什么模块可能来自用户的输入，这种情况下，webpack 会导入带目录下的所有的模块，防止以防万一，用户输入是已经存在的模块
+
+如果遇到这种情况，需要告诉 webpack 这样的模块应该在什么目录下
+
+```js
+const a = require(`./util` + value); // 会导入util下面的所有模块
+```
+
+实际上面的操作会被转换成下面的代码，仅在 webapck 运行过程中有效
+
+```js
+require.context("./util", true, /\.js$/); // 返回一个函数
+// 参数1：表示目录，引入模块的目录
+// 参数2：是否递归寻找子目录
+// 参数3：正则表达式，如果没有值，则打包全部模块到打包结果
+```
+
+返回的函数可以使用该目录下的对应模块
+
+```js
+const context = require.context("./util", true, /\.js$/);
+const a = context("./a.js"); // 执行 a 模块，返回 a 模块的导出结果
+console.log(a);
+
+context.keys(); // 是一个数组，包含导入的所有模块路径
+```
+
+一般用于将该目录中的所有模块全部导入到一个模块中，进行模块整合

@@ -2656,3 +2656,282 @@ module.exports = {
 ```
 
 > 转换 async 和 await 时，需要将他们转换成生成器，而生成器也是新语法，也需要转换，转换生成器就需要 regenerator-runtime 这个库的支持，这个库是通过 “迭代器+可迭代协议+状态机” 实现的。
+
+### 性能优化
+
+性能包括：
+
+- 构建性能：开发阶段打包的时间
+- 传输性能：JS 文件从服务器到客户端的时间（文件的总传输量、文件数量、利用浏览器缓存）
+- 运行性能：JS 代码在浏览器端的运行速度
+
+> 不要过早的关注性能，怎么舒服、怎么好维护、怎么好阅读就怎么写，性能优化是以后的事。
+
+##### 构建性能优化
+
+**减少模块的解析**
+
+模块解析包括：AST 抽象语法树分析、分析依赖（记录依赖到 dependencies 中）、替换导入函数这三部分。
+
+如果不解析模块，那么 loader 处理的结果就是最终文件中的代码，如果没有使用 loader，那么源码就是最终文件中的代码，
+
+总结：如果不对模块解析，可以提高构建性能。
+
+不依赖其他模块的模块不需要解析，没有 require 或 import 的第三方库：如 jquery
+
+```js
+module.exports = {
+  mode: "development",
+  module: {
+    noParse: /jquery/, // 值是一个正则表达式，表示不解析 jquery 库
+  },
+};
+```
+
+> 最终结果中还是包括了 jquery，只是不要解析，因为里面没有依赖，没有必要浪费性能
+
+**优化 loader 性能**
+
+- Markdown 文件在浏览器打开有侧边目录
+
+文件 => 首选项 => 设置 => `Markdown Preview Enhanced` => `Markdown-preview-enhanced: Enable Script Execution` 选中，表示开启脚本
+
+- Markdown 预览中的图片设置
+
+1. 按 F1，输入：`Markdown Preview Enhanced: Customize Css` 命令，在 less 文件中书写如下代码
+
+```less
+/* Please visit the URL below for more information: */
+/*   https://shd101wyy.github.io/markdown-preview-enhanced/#/customize-css */
+
+.markdown-preview.markdown-preview {
+  // modify your style here
+  // eg: background-color: blue;
+  font-family: "consolas", "Noto Sans S Chinese";
+  font-size: 1em;
+}
+
+.markdown-img-description {
+  text-align: center;
+  margin-top: -1em;
+  color: #666;
+  margin-bottom: 2em;
+}
+
+html body img {
+  border: 2px solid #ccc;
+}
+
+.markdown-p-center {
+  text-align: center;
+}
+```
+
+2. 然后按 F1，输入 `Markdown Preview Enhanced: Extend Parser` 命令，在 JS 文件中书写如下代码
+
+```js
+const scripts = `
+<script>
+    function setCurrent(){
+        const links = document.querySelectorAll(".md-sidebar-toc a")
+        for(const link of links){
+            link.style.color="";
+        }
+        const hash = location.hash;
+        const a = document.querySelector('a[href="'+hash+'"]');
+        if(a){
+            a.style.color = "#f40";
+        }
+    }
+    setCurrent();
+    window.onhashchange = setCurrent;
+</script>
+`;
+var fs = require("fs");
+module.exports = {
+  onWillParseMarkdown: function (markdown) {
+    return new Promise((resolve, reject) => {
+      const reg = /\!\[(.*)\]\((\S+)\)/gm;
+      markdown = markdown.replace(reg, function (match, g1, g2) {
+        var width = "100%";
+        if (g1) {
+          var w = g1.split("|");
+          if (w.length > 1) {
+            width = w[1] + "px";
+            g1 = w[0];
+          }
+        }
+        return `
+<p class="markdown-p-center">
+  <img src="${g2}" alt="${g1}" style="max-width:${width}"/>
+</p>
+<p class="markdown-img-description">
+  ${g1}
+</p>
+  `;
+      });
+      resolve(markdown);
+    });
+  },
+  onDidParseMarkdown: function (html) {
+    return new Promise((resolve, reject) => {
+      return resolve(scripts + html);
+    });
+  },
+};
+```
+
+经过上面两步，效果如下
+
+![loader的执行过程](24.性能优化/优化loader性能/2020-02-21-13-32-36.png)
+
+> 言归正传，下面学习优化 loader 的性能
+
+1. 限制 loader 的应用范围（对某些库不使用 loader）
+
+例如：babel-loader 可以将 ES6 及更高版本的语法转换成 ES5 语法，可是有些库本来就使用 ES5 语法编写，这时就不需要转换，转换反而浪费构建的时间。
+
+例如：lodash 是使用 ES3 的语法编写的，这时就不需要转换了。
+
+- 使用 `module.rules.exclude` 排除不需要使用 loader 的场景，使用正则匹配
+- 使用 `module.rules.include` 包含需要应用 loader 的场景，使用正则匹配
+
+需要使用 `@babel/preset-env` 和 `core-js`
+
+```js
+module.exports = {
+  mode: "development",
+  devtool: "source-map",
+
+  module: {
+    rules: [
+      {
+        test: /\.js$/,
+        // exclude: /lodash/, // 排除掉lodash
+        // exclude: /node_modules/, // 排除掉整个 node_modules 目录
+        include: /src/, // 只编译 src 目录
+        use: "babel-loader",
+      },
+    ],
+  },
+};
+```
+
+> 这种做法是对 loader 的限制，与 noParse 不冲突，因为 npParse 不经过 loader。
+
+1. 缓存 loader 的结果
+
+假设：如果某个文件的内容不变，那么经过 loader 处理后的结果也不变
+
+如果假设成立，那么我们可以把第一 loader 处理的结果缓存起来，后续再编译就不要编译这个文件了
+
+`cache-loader` 可以实现这个功能，只需要把 `cache-loader` 放到数组的第一项即可
+
+```shell
+npm i cache-loader
+```
+
+```js
+module.exports = {
+  mode: "development",
+  devtool: "source-map",
+
+  module: {
+    rules: [
+      {
+        test: /\.js$/,
+        // use: ["cache-loader", "babel-loader"],
+        use: [
+          {
+            loader: "cache-loader",
+            options: {
+              cacheDirectory: "./cache", // 指定缓存目录
+            },
+          },
+          "babel-loader",
+        ],
+      },
+    ],
+  },
+};
+```
+
+`cache-loader` 放在第一个，loader 都是从后往前运行的，当运行到 `cache-loader` 的时候，别的 loader 都运行完了，那么其他 loader 怎么知道要用缓存呢？
+
+其实在 loader 的运行过程中，包含一个 pitch 过程
+
+```js
+function loader(source) {
+  return "new source";
+}
+
+loader.pitch = function (filePath) {
+  // 可以返回，可以不返回，如果要返回则返回源代码字符串
+};
+
+module.exports = loader;
+```
+
+![loader的执行过程](24.性能优化/优化loader性能/2020-02-21-13-32-36.png)
+
+3. 为 loader 开启多线程
+
+`thread-loader` 会开启一个线程池，线程池中包含适量的线程（和 cpu 的核数一样），它会把后续的 loader 放入到线程池中运行，以提高构建性能。
+
+在实际的开发中，可以测试后再决定 `thread-loader` 放置到什么位置，它后面书写的 loader 都在线程池中，前面的 loader 不在线程池中。
+
+由于后续的 loader 放入到线程池中，所以后续的 loader
+
+- 无法使用 webpackApi 生成文件
+- 无法使用自定义的 pluginApi（如：mini-css-extract-plugin）
+- 无法访问 webpack 配置
+
+开启和管理线程都需要耗费时间，在小型项目中使用反而会增加构建时间。
+
+```js
+const cpus = require("os").cpus();
+console.log(cpus); // 获取 cpu 核数
+```
+
+**热替换（热更新）：HMR**
+
+热替换并不能降低构建时间，有时候会增加构建时间，但是可以降低代码改动到效果呈现的时间。
+
+例如：我们有一个很大的表单元素，有 100 个，当填写到 99 个表单的时候，我们发现有个地方有错误，需要更改源代码，经过编译打包，页面重新刷新了，之前的 99 项全部白填了，崩溃了。
+
+这时我们就需要热替换（热更新），页面不会刷新，浏览器仅请求改动后的资源，更新需要改动的地方。
+
+`new webpack.HotModuleReplacementPlugin()` 可选的，webpack4 之后只要开启了 `hot: true`，默认会使用这个插件，热更新也是通过这个插件完成的。
+
+第一步：配置文件
+
+```js
+module.exports = {
+  mode: "development",
+
+  devServer: {
+    hot: true,
+  },
+
+  // plugins: [new webpack.HotModuleReplacementPlugin()],
+};
+```
+
+第二部：任意文件加入下面代码，这段代码会参与运行
+
+```js
+// 是否开启了热更新
+if (module.hot) {
+  module.hot.accept(); // 接受热更新
+}
+```
+
+当配置文件中开启了热更新，`webpack-dev-server` 会向最终结果中注入 `module.hot` 属性。
+
+在默认情况下，`webpack-dev-server` 不管是否开启了热更新，当重新打包后，都会调用 `location.reload` 刷新页面，如果调用 `module.hot.accept` 方法会改变该行为。
+
+`module.hot.accept` 方法的作用是让 `webpack-dev-server` 通过 `web socket` 管道把服务器更新的内容发送到浏览器，然后将返回结果交给 `webpack.HotModuleReplacementPlugin` 插件进行处理，该插件会根据更新内容覆盖原始代码，让代码重新执行。
+
+**所以：热更新发生在代码运行期间**
+
+样式代码同样可以进行热更新，需要使用 `style-loader`，因为热更新发生时，`HotModuleReplacementPlugin` 插件只会简单的覆盖并运行模块代码，因此代码一运行 `style-loader` 就会重新设置 style 元素中的样式，而 `mini-css-extract-plugin` 生成的文件是在构建期间，运行期间无法改动文件，因此它对热替换无效。
